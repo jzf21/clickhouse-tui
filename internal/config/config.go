@@ -17,9 +17,10 @@ type Connection struct {
 }
 
 type CloudCredentials struct {
-	APIKey    string `json:"api_key"`
-	APISecret string `json:"api_secret"`
-	OrgID     string `json:"org_id,omitempty"`
+	APIKey          string   `json:"api_key"`
+	APISecret       string   `json:"api_secret"`
+	OrgID           string   `json:"org_id,omitempty"`
+	AllowedServices []string `json:"allowed_services,omitempty"` // service IDs visible in dashboard
 }
 
 type Store struct {
@@ -93,4 +94,36 @@ func (s *Store) SetCloud(creds CloudCredentials) error {
 
 func (s *Store) HasCloud() bool {
 	return s.Cloud.APIKey != "" && s.Cloud.APISecret != ""
+}
+
+// IsServiceAllowed returns true if the service ID is in the allowlist,
+// or if the allowlist is empty (all services allowed).
+func (s *Store) IsServiceAllowed(serviceID string) bool {
+	if len(s.Cloud.AllowedServices) == 0 {
+		return true
+	}
+	for _, id := range s.Cloud.AllowedServices {
+		if id == serviceID {
+			return true
+		}
+	}
+	return false
+}
+
+// ToggleServiceAllowed adds or removes a service ID from the allowlist.
+func (s *Store) ToggleServiceAllowed(serviceID string) error {
+	for i, id := range s.Cloud.AllowedServices {
+		if id == serviceID {
+			s.Cloud.AllowedServices = append(s.Cloud.AllowedServices[:i], s.Cloud.AllowedServices[i+1:]...)
+			return s.Save()
+		}
+	}
+	s.Cloud.AllowedServices = append(s.Cloud.AllowedServices, serviceID)
+	return s.Save()
+}
+
+// ClearAllowedServices removes all entries from the allowlist (shows all services).
+func (s *Store) ClearAllowedServices() error {
+	s.Cloud.AllowedServices = nil
+	return s.Save()
 }

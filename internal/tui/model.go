@@ -22,6 +22,7 @@ const (
 	viewCloudServices
 	viewCloudSetup
 	viewCloudDetail
+	viewCloudFilter
 )
 
 type tab int
@@ -74,12 +75,14 @@ type Model struct {
 	confirmDelete bool
 
 	// Cloud
-	cloudClient   *cloud.Client
-	cloudServices []cloud.Service
-	cloudCursor   int
-	cloudLoading  bool
-	cloudInputs   []textinput.Model
-	cloudFocus    int
+	cloudClient      *cloud.Client
+	cloudServices    []cloud.Service // filtered services shown in dashboard
+	cloudAllServices []cloud.Service // all services from API (used in filter view)
+	cloudCursor      int
+	cloudLoading     bool
+	cloudInputs      []textinput.Model
+	cloudFocus       int
+	filterCursor     int
 }
 
 var addFormLabels = []string{"Name", "Host", "Port", "User", "Password", "Database"}
@@ -146,9 +149,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.status = fmt.Sprintf("Cloud error: %v", msg.err)
 			m.statusOk = false
 		} else {
-			m.cloudServices = msg.services
-			m.status = fmt.Sprintf("Loaded %d cloud service(s)", len(msg.services))
+			m.cloudAllServices = msg.services
+			m.cloudServices = m.filterServices(msg.services)
+			m.status = fmt.Sprintf("Loaded %d cloud service(s) (%d visible)", len(msg.services), len(m.cloudServices))
 			m.statusOk = true
+			if m.cloudCursor >= len(m.cloudServices) {
+				m.cloudCursor = max(0, len(m.cloudServices)-1)
+			}
 		}
 		return m, nil
 
@@ -197,6 +204,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateCloudSetup(msg)
 		case viewCloudDetail:
 			return m.updateCloudDetail(msg)
+		case viewCloudFilter:
+			return m.updateCloudFilter(msg)
 		}
 	}
 
@@ -327,6 +336,13 @@ func (m Model) updateCloudServices(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.view = viewCloudDetail
 		}
 		return m, nil
+	case "f":
+		// Open filter view to select which services appear on dashboard
+		if len(m.cloudAllServices) > 0 {
+			m.view = viewCloudFilter
+			m.filterCursor = 0
+		}
+		return m, nil
 	case "c":
 		// Reconfigure cloud credentials
 		m.view = viewCloudSetup
@@ -347,6 +363,47 @@ func (m Model) updateCloudDetail(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.view = viewCloudServices
 	case "q":
 		return m, tea.Quit
+	}
+	return m, nil
+}
+
+func (m Model) updateCloudFilter(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "q":
+		return m, tea.Quit
+	case "esc":
+		// Apply filter and go back to cloud services
+		m.cloudServices = m.filterServices(m.cloudAllServices)
+		if m.cloudCursor >= len(m.cloudServices) {
+			m.cloudCursor = max(0, len(m.cloudServices)-1)
+		}
+		m.view = viewCloudServices
+		if len(m.store.Cloud.AllowedServices) > 0 {
+			m.status = fmt.Sprintf("Filter active: %d of %d services visible", len(m.cloudServices), len(m.cloudAllServices))
+		} else {
+			m.status = "Filter cleared: all services visible"
+		}
+		m.statusOk = true
+		return m, nil
+	case "up", "k":
+		if m.filterCursor > 0 {
+			m.filterCursor--
+		}
+	case "down", "j":
+		if m.filterCursor < len(m.cloudAllServices)-1 {
+			m.filterCursor++
+		}
+	case " ", "enter":
+		// Toggle selected service
+		if len(m.cloudAllServices) > 0 {
+			svc := m.cloudAllServices[m.filterCursor]
+			_ = m.store.ToggleServiceAllowed(svc.ID)
+		}
+	case "x":
+		// Clear all filters (show all)
+		_ = m.store.ClearAllowedServices()
+		m.status = "Filter cleared"
+		m.statusOk = true
 	}
 	return m, nil
 }
@@ -559,6 +616,8 @@ func (m Model) View() string {
 		b.WriteString(m.renderCloudSetup())
 	case viewCloudDetail:
 		b.WriteString(m.renderCloudDetail())
+	case viewCloudFilter:
+		b.WriteString(m.renderCloudFilter())
 	}
 
 	// Status bar
@@ -729,6 +788,55 @@ func (m Model) renderCloudDetail() string {
 	return activePanelStyle.Width(min(m.width-4, 72)).Render(content)
 }
 
+func (m Model) renderCloudFilter() string {
+	var rows []string
+	rows = append(rows, cloudTitleStyle.Render("Select Services for Dashboard"))
+	rows = append(rows, "")
+	rows = append(rows, subtitleStyle.Render("  Only selected services will be visible and controllable."))
+	rows = append(rows, subtitleStyle.Render("  If none are selected, all services are shown."))
+	rows = append(rows, "")
+
+	for i, svc := range m.cloudAllServices {
+		cursor := "  "
+		style := normalItemStyle
+		if i == m.filterCursor {
+			cursor = " >"
+			style = selectedItemStyle
+		}
+
+		checked := "[ ]"
+		if m.store.IsServiceAllowed(svc.ID) {
+			checked = "[✓]"
+		}
+		// If allowlist is empty, show all as implicitly included
+		if len(m.store.Cloud.AllowedServices) == 0 {
+			checked = "[·]"
+		}
+
+		stateStr := renderCloudState(svc.State)
+
+		line := fmt.Sprintf("%s %s %s  %s  %s",
+			cursor,
+			style.Render(checked),
+			style.Render(svc.Name),
+			subtitleStyle.Render(svc.Tier),
+			stateStr,
+		)
+		rows = append(rows, line)
+	}
+
+	rows = append(rows, "")
+	active := len(m.store.Cloud.AllowedServices)
+	if active > 0 {
+		rows = append(rows, subtitleStyle.Render(fmt.Sprintf("  %d of %d services selected", active, len(m.cloudAllServices))))
+	} else {
+		rows = append(rows, subtitleStyle.Render("  No filter — all services visible"))
+	}
+
+	content := lipgloss.JoinVertical(lipgloss.Left, rows...)
+	return activePanelStyle.Width(min(m.width-4, 80)).Render(content)
+}
+
 func (m Model) renderCloudSetup() string {
 	var rows []string
 	rows = append(rows, cloudTitleStyle.Render("ClickHouse Cloud Setup"))
@@ -778,7 +886,9 @@ func (m Model) renderHelp() string {
 	case viewAdd:
 		return helpStyle.Render("  tab: next field  |  enter: submit  |  esc: cancel")
 	case viewCloudServices:
-		return helpStyle.Render("  j/k: navigate  |  enter: details  |  s: start/stop  |  r: refresh  |  c: config  |  tab: local  |  q: quit")
+		return helpStyle.Render("  j/k: navigate  |  enter: details  |  s: start/stop  |  r: refresh  |  f: filter  |  c: config  |  tab: local  |  q: quit")
+	case viewCloudFilter:
+		return helpStyle.Render("  j/k: navigate  |  space/enter: toggle  |  x: clear filter  |  esc: apply & back")
 	case viewCloudSetup:
 		return helpStyle.Render("  tab: next field  |  enter: submit  |  esc: cancel")
 	case viewCloudDetail:
@@ -788,8 +898,28 @@ func (m Model) renderHelp() string {
 	}
 }
 
+func (m Model) filterServices(services []cloud.Service) []cloud.Service {
+	if len(m.store.Cloud.AllowedServices) == 0 {
+		return services
+	}
+	var filtered []cloud.Service
+	for _, svc := range services {
+		if m.store.IsServiceAllowed(svc.ID) {
+			filtered = append(filtered, svc)
+		}
+	}
+	return filtered
+}
+
 func min(a, b int) int {
 	if a < b {
+		return a
+	}
+	return b
+}
+
+func max(a, b int) int {
+	if a > b {
 		return a
 	}
 	return b

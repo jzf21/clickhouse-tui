@@ -31,6 +31,7 @@ go build -o clickhouse-tui .
 | `j` / `k` | Navigate up / down |
 | `a` | Add a new connection |
 | `d` | Delete selected connection |
+| `f` | Filter which cloud services are visible |
 | `s` | Start / stop a service |
 | `Enter` | View connection details |
 | `q` / `Ctrl+C` | Quit |
