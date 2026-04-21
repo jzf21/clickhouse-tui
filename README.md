@@ -13,6 +13,31 @@ Built with Go and [Bubbletea](https://github.com/charmbracelet/bubbletea).
 
 ## Install
 
+### Download pre-built binary
+
+```sh
+# Linux (amd64)
+curl -L https://github.com/jzf21/clickhouse-tui/releases/latest/download/clickhouse-tui-linux-amd64 -o clickhouse-tui
+
+# Linux (arm64)
+curl -L https://github.com/jzf21/clickhouse-tui/releases/latest/download/clickhouse-tui-linux-arm64 -o clickhouse-tui
+
+# macOS (Apple Silicon)
+curl -L https://github.com/jzf21/clickhouse-tui/releases/latest/download/clickhouse-tui-darwin-arm64 -o clickhouse-tui
+
+# macOS (Intel)
+curl -L https://github.com/jzf21/clickhouse-tui/releases/latest/download/clickhouse-tui-darwin-amd64 -o clickhouse-tui
+```
+
+Then make it executable and move it to your PATH:
+
+```sh
+chmod +x clickhouse-tui
+sudo mv clickhouse-tui /usr/local/bin/
+```
+
+### Build from source
+
 ```sh
 go build -o clickhouse-tui .
 ```
