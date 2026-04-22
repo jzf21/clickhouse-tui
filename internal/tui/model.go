@@ -23,6 +23,7 @@ const (
 	viewCloudSetup
 	viewCloudDetail
 	viewCloudFilter
+	viewCloudScaling
 )
 
 type tab int
@@ -57,6 +58,16 @@ type cloudActionMsg struct {
 	err bool
 }
 
+type cloudScalingMsg struct {
+	scaling *cloud.ScalingConfig
+	err     error
+}
+
+type cloudScalingUpdateMsg struct {
+	msg string
+	err bool
+}
+
 type Model struct {
 	store    *config.Store
 	cursor   int
@@ -83,12 +94,19 @@ type Model struct {
 	cloudInputs      []textinput.Model
 	cloudFocus       int
 	filterCursor     int
+
+	// Scaling
+	scalingInputs  []textinput.Model
+	scalingFocus   int
+	scalingCurrent *cloud.ScalingConfig
+	scalingLoading bool
 }
 
 var addFormLabels = []string{"Name", "Host", "Port", "User", "Password", "Database"}
 var addFormDefaults = []string{"", "localhost", "9000", "default", "", "default"}
 
 var cloudSetupLabels = []string{"API Key", "API Secret"}
+var scalingLabels = []string{"Min Memory (GB)", "Max Memory (GB)", "Num Replicas"}
 
 func NewModel(store *config.Store) Model {
 	inputs := make([]textinput.Model, len(addFormLabels))
@@ -113,10 +131,19 @@ func NewModel(store *config.Store) Model {
 		cloudInputs[i] = t
 	}
 
+	scalingInputs := make([]textinput.Model, len(scalingLabels))
+	for i := range scalingInputs {
+		t := textinput.New()
+		t.CharLimit = 6
+		t.Width = 10
+		scalingInputs[i] = t
+	}
+
 	m := Model{
-		store:       store,
-		inputs:      inputs,
-		cloudInputs: cloudInputs,
+		store:         store,
+		inputs:        inputs,
+		cloudInputs:   cloudInputs,
+		scalingInputs: scalingInputs,
 	}
 
 	// Initialize cloud client if credentials exist
@@ -186,6 +213,29 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case cloudScalingMsg:
+		m.scalingLoading = false
+		if msg.err != nil {
+			m.status = fmt.Sprintf("Error loading scaling: %v", msg.err)
+			m.statusOk = false
+			return m, nil
+		}
+		m.scalingCurrent = msg.scaling
+		m.scalingInputs[0].SetValue(fmt.Sprintf("%d", msg.scaling.MinTotalMemoryGb))
+		m.scalingInputs[1].SetValue(fmt.Sprintf("%d", msg.scaling.MaxTotalMemoryGb))
+		m.scalingInputs[2].SetValue(fmt.Sprintf("%d", msg.scaling.NumReplicas))
+		m.status = "Scaling config loaded"
+		m.statusOk = true
+		return m, nil
+
+	case cloudScalingUpdateMsg:
+		m.status = msg.msg
+		m.statusOk = !msg.err
+		if !msg.err {
+			return m, m.fetchCloudServices()
+		}
+		return m, nil
+
 	case tea.KeyMsg:
 		if msg.String() == "ctrl+c" {
 			return m, tea.Quit
@@ -206,6 +256,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateCloudDetail(msg)
 		case viewCloudFilter:
 			return m.updateCloudFilter(msg)
+		case viewCloudScaling:
+			return m.updateCloudScaling(msg)
 		}
 	}
 
@@ -343,6 +395,26 @@ func (m Model) updateCloudServices(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.filterCursor = 0
 		}
 		return m, nil
+	case "m":
+		// Open scaling config for selected service
+		if len(m.cloudServices) > 0 {
+			m.view = viewCloudScaling
+			m.scalingFocus = 0
+			m.scalingLoading = true
+			for i := range m.scalingInputs {
+				m.scalingInputs[i].SetValue("")
+				m.scalingInputs[i].Blur()
+			}
+			m.scalingInputs[0].Focus()
+			svc := m.cloudServices[m.cloudCursor]
+			orgID := m.store.Cloud.OrgID
+			m.status = fmt.Sprintf("Loading scaling for %s...", svc.Name)
+			m.statusOk = true
+			return m, func() tea.Msg {
+				scaling, err := m.cloudClient.GetScaling(orgID, svc.ID)
+				return cloudScalingMsg{scaling, err}
+			}
+		}
 	case "c":
 		// Reconfigure cloud credentials
 		m.view = viewCloudSetup
@@ -363,6 +435,26 @@ func (m Model) updateCloudDetail(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.view = viewCloudServices
 	case "q":
 		return m, tea.Quit
+	case "m":
+		// Open scaling from detail view
+		if m.cloudCursor < len(m.cloudServices) {
+			m.view = viewCloudScaling
+			m.scalingFocus = 0
+			m.scalingLoading = true
+			for i := range m.scalingInputs {
+				m.scalingInputs[i].SetValue("")
+				m.scalingInputs[i].Blur()
+			}
+			m.scalingInputs[0].Focus()
+			svc := m.cloudServices[m.cloudCursor]
+			orgID := m.store.Cloud.OrgID
+			m.status = fmt.Sprintf("Loading scaling for %s...", svc.Name)
+			m.statusOk = true
+			return m, func() tea.Msg {
+				scaling, err := m.cloudClient.GetScaling(orgID, svc.ID)
+				return cloudScalingMsg{scaling, err}
+			}
+		}
 	}
 	return m, nil
 }
@@ -406,6 +498,93 @@ func (m Model) updateCloudFilter(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.statusOk = true
 	}
 	return m, nil
+}
+
+func (m Model) updateCloudScaling(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		m.view = viewCloudServices
+		return m, nil
+	case "q":
+		return m, tea.Quit
+	case "tab", "down":
+		m.scalingInputs[m.scalingFocus].Blur()
+		m.scalingFocus = (m.scalingFocus + 1) % len(m.scalingInputs)
+		m.scalingInputs[m.scalingFocus].Focus()
+		return m, m.scalingInputs[m.scalingFocus].Cursor.BlinkCmd()
+	case "shift+tab", "up":
+		m.scalingInputs[m.scalingFocus].Blur()
+		m.scalingFocus = (m.scalingFocus - 1 + len(m.scalingInputs)) % len(m.scalingInputs)
+		m.scalingInputs[m.scalingFocus].Focus()
+		return m, m.scalingInputs[m.scalingFocus].Cursor.BlinkCmd()
+	case "enter":
+		if m.scalingFocus == len(m.scalingInputs)-1 {
+			return m.submitScaling()
+		}
+		m.scalingInputs[m.scalingFocus].Blur()
+		m.scalingFocus++
+		m.scalingInputs[m.scalingFocus].Focus()
+		return m, m.scalingInputs[m.scalingFocus].Cursor.BlinkCmd()
+	}
+
+	var cmd tea.Cmd
+	m.scalingInputs[m.scalingFocus], cmd = m.scalingInputs[m.scalingFocus].Update(msg)
+	return m, cmd
+}
+
+func (m Model) submitScaling() (tea.Model, tea.Cmd) {
+	if m.cloudCursor >= len(m.cloudServices) {
+		return m, nil
+	}
+
+	minMem := parseIntOr(m.scalingInputs[0].Value(), 0)
+	maxMem := parseIntOr(m.scalingInputs[1].Value(), 0)
+	replicas := parseIntOr(m.scalingInputs[2].Value(), 0)
+
+	if minMem <= 0 || maxMem <= 0 {
+		m.status = "Min and Max memory must be positive integers"
+		m.statusOk = false
+		return m, nil
+	}
+	if minMem > maxMem {
+		m.status = "Min memory cannot exceed Max memory"
+		m.statusOk = false
+		return m, nil
+	}
+	if replicas <= 0 {
+		m.status = "Replicas must be at least 1"
+		m.statusOk = false
+		return m, nil
+	}
+
+	svc := m.cloudServices[m.cloudCursor]
+	orgID := m.store.Cloud.OrgID
+	cfg := cloud.ScalingConfig{
+		MinTotalMemoryGb: minMem,
+		MaxTotalMemoryGb: maxMem,
+		NumReplicas:      replicas,
+		IdleScaling:      m.scalingCurrent != nil && m.scalingCurrent.IdleScaling,
+	}
+
+	m.status = fmt.Sprintf("Updating scaling for %s...", svc.Name)
+	m.statusOk = true
+	m.view = viewCloudServices
+
+	return m, func() tea.Msg {
+		err := m.cloudClient.UpdateScaling(orgID, svc.ID, cfg)
+		if err != nil {
+			return cloudScalingUpdateMsg{fmt.Sprintf("Error updating scaling: %v", err), true}
+		}
+		return cloudScalingUpdateMsg{fmt.Sprintf("Scaling updated for %s (min: %dGB, max: %dGB, replicas: %d)", svc.Name, cfg.MinTotalMemoryGb, cfg.MaxTotalMemoryGb, cfg.NumReplicas), false}
+	}
+}
+
+func parseIntOr(s string, fallback int) int {
+	var n int
+	if _, err := fmt.Sscanf(s, "%d", &n); err != nil {
+		return fallback
+	}
+	return n
 }
 
 func (m Model) updateCloudSetup(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -618,6 +797,8 @@ func (m Model) View() string {
 		b.WriteString(m.renderCloudDetail())
 	case viewCloudFilter:
 		b.WriteString(m.renderCloudFilter())
+	case viewCloudScaling:
+		b.WriteString(m.renderCloudScaling())
 	}
 
 	// Status bar
@@ -771,6 +952,23 @@ func (m Model) renderCloudDetail() string {
 	rows = append(rows, fmt.Sprintf("%s %s",
 		cloudDetailLabel.Render("Tier:     "), cloudDetailValue.Render(svc.Tier)))
 
+	if svc.Scaling != nil {
+		rows = append(rows, "")
+		rows = append(rows, cloudTitleStyle.Render("Scaling:"))
+		rows = append(rows, fmt.Sprintf("%s %s",
+			cloudDetailLabel.Render("Min Memory:"), cloudDetailValue.Render(fmt.Sprintf("%d GB", svc.Scaling.MinTotalMemoryGb))))
+		rows = append(rows, fmt.Sprintf("%s %s",
+			cloudDetailLabel.Render("Max Memory:"), cloudDetailValue.Render(fmt.Sprintf("%d GB", svc.Scaling.MaxTotalMemoryGb))))
+		rows = append(rows, fmt.Sprintf("%s %s",
+			cloudDetailLabel.Render("Replicas: "), cloudDetailValue.Render(fmt.Sprintf("%d", svc.Scaling.NumReplicas))))
+		idleStr := "disabled"
+		if svc.Scaling.IdleScaling {
+			idleStr = "enabled"
+		}
+		rows = append(rows, fmt.Sprintf("%s %s",
+			cloudDetailLabel.Render("Idle Scale:"), cloudDetailValue.Render(idleStr)))
+	}
+
 	if len(svc.Endpoints) > 0 {
 		rows = append(rows, "")
 		rows = append(rows, cloudTitleStyle.Render("Endpoints:"))
@@ -782,7 +980,7 @@ func (m Model) renderCloudDetail() string {
 	}
 
 	rows = append(rows, "")
-	rows = append(rows, subtitleStyle.Render("  Esc to go back"))
+	rows = append(rows, subtitleStyle.Render("  m: edit scaling  |  Esc to go back"))
 
 	content := lipgloss.JoinVertical(lipgloss.Left, rows...)
 	return activePanelStyle.Width(min(m.width-4, 72)).Render(content)
@@ -837,6 +1035,39 @@ func (m Model) renderCloudFilter() string {
 	return activePanelStyle.Width(min(m.width-4, 80)).Render(content)
 }
 
+func (m Model) renderCloudScaling() string {
+	if m.cloudCursor >= len(m.cloudServices) {
+		return ""
+	}
+
+	svc := m.cloudServices[m.cloudCursor]
+
+	var rows []string
+	rows = append(rows, cloudTitleStyle.Render(fmt.Sprintf("Scaling: %s", svc.Name)))
+	rows = append(rows, "")
+
+	if m.scalingLoading {
+		rows = append(rows, subtitleStyle.Render("  Loading current scaling config..."))
+	} else if m.scalingCurrent != nil {
+		rows = append(rows, subtitleStyle.Render(fmt.Sprintf("  Current: %dGB min / %dGB max / %d replicas / idle-scaling: %t",
+			m.scalingCurrent.MinTotalMemoryGb, m.scalingCurrent.MaxTotalMemoryGb,
+			m.scalingCurrent.NumReplicas, m.scalingCurrent.IdleScaling)))
+	}
+	rows = append(rows, "")
+
+	for i, label := range scalingLabels {
+		lbl := inputLabelStyle.Render(fmt.Sprintf("  %-18s", label))
+		field := m.scalingInputs[i].View()
+		rows = append(rows, fmt.Sprintf("%s %s", lbl, field))
+	}
+
+	rows = append(rows, "")
+	rows = append(rows, subtitleStyle.Render("  Enter to apply  |  Esc to cancel"))
+
+	content := lipgloss.JoinVertical(lipgloss.Left, rows...)
+	return activePanelStyle.Width(min(m.width-4, 65)).Render(content)
+}
+
 func (m Model) renderCloudSetup() string {
 	var rows []string
 	rows = append(rows, cloudTitleStyle.Render("ClickHouse Cloud Setup"))
@@ -886,13 +1117,15 @@ func (m Model) renderHelp() string {
 	case viewAdd:
 		return helpStyle.Render("  tab: next field  |  enter: submit  |  esc: cancel")
 	case viewCloudServices:
-		return helpStyle.Render("  j/k: navigate  |  enter: details  |  s: start/stop  |  r: refresh  |  f: filter  |  c: config  |  tab: local  |  q: quit")
+		return helpStyle.Render("  j/k: navigate  |  enter: details  |  s: start/stop  |  m: scaling  |  r: refresh  |  f: filter  |  c: config  |  tab: local  |  q: quit")
 	case viewCloudFilter:
 		return helpStyle.Render("  j/k: navigate  |  space/enter: toggle  |  x: clear filter  |  esc: apply & back")
+	case viewCloudScaling:
+		return helpStyle.Render("  tab: next field  |  enter: apply  |  esc: cancel")
 	case viewCloudSetup:
 		return helpStyle.Render("  tab: next field  |  enter: submit  |  esc: cancel")
 	case viewCloudDetail:
-		return helpStyle.Render("  esc: back  |  q: quit")
+		return helpStyle.Render("  m: edit scaling  |  esc: back  |  q: quit")
 	default:
 		return helpStyle.Render("  y: confirm  |  n: cancel")
 	}

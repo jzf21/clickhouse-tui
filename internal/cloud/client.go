@@ -96,16 +96,25 @@ type Organization struct {
 	Name string `json:"name"`
 }
 
+// ScalingConfig represents the scaling configuration for a service.
+type ScalingConfig struct {
+	MinTotalMemoryGb int  `json:"minTotalMemoryGb"`
+	MaxTotalMemoryGb int  `json:"maxTotalMemoryGb"`
+	NumReplicas      int  `json:"numReplicas"`
+	IdleScaling      bool `json:"idleScaling"`
+}
+
 // Service represents a ClickHouse Cloud service.
 type Service struct {
-	ID        string    `json:"id"`
-	Name      string    `json:"name"`
-	Provider  string    `json:"provider"`
-	Region    string    `json:"region"`
-	State     string    `json:"state"`
-	Tier      string    `json:"tier"`
-	Endpoints []Endpoint `json:"endpoints"`
-	CreatedAt string    `json:"created_at"`
+	ID        string        `json:"id"`
+	Name      string        `json:"name"`
+	Provider  string        `json:"provider"`
+	Region    string        `json:"region"`
+	State     string        `json:"state"`
+	Tier      string        `json:"tier"`
+	Endpoints []Endpoint    `json:"endpoints"`
+	Scaling   *ScalingConfig `json:"scaling,omitempty"`
+	CreatedAt string        `json:"created_at"`
 }
 
 type Endpoint struct {
@@ -169,6 +178,33 @@ func (c *Client) StopService(orgID, serviceID string) error {
 	_, err := c.do("PATCH",
 		fmt.Sprintf("/organizations/%s/services/%s/state", orgID, serviceID),
 		`{"command":"stop"}`)
+	return err
+}
+
+// GetScaling returns the current scaling configuration for a service.
+func (c *Client) GetScaling(orgID, serviceID string) (*ScalingConfig, error) {
+	data, err := c.do("GET", fmt.Sprintf("/organizations/%s/services/%s", orgID, serviceID), "")
+	if err != nil {
+		return nil, err
+	}
+
+	var svc Service
+	if err := json.Unmarshal(data, &svc); err != nil {
+		return nil, fmt.Errorf("parsing service: %w", err)
+	}
+	if svc.Scaling == nil {
+		return &ScalingConfig{}, nil
+	}
+	return svc.Scaling, nil
+}
+
+// UpdateScaling updates the scaling configuration for a service.
+func (c *Client) UpdateScaling(orgID, serviceID string, cfg ScalingConfig) error {
+	body := fmt.Sprintf(`{"scaling":{"minTotalMemoryGb":%d,"maxTotalMemoryGb":%d,"numReplicas":%d,"idleScaling":%t}}`,
+		cfg.MinTotalMemoryGb, cfg.MaxTotalMemoryGb, cfg.NumReplicas, cfg.IdleScaling)
+	_, err := c.do("PATCH",
+		fmt.Sprintf("/organizations/%s/services/%s/scaling", orgID, serviceID),
+		body)
 	return err
 }
 
