@@ -129,4 +129,30 @@ var (
 
 	cloudDetailValue = lipgloss.NewStyle().
 				Foreground(textColor)
+
+	// Health dashboard styles
+	healthColor       = lipgloss.Color("#10B981") // emerald green
+	healthAccentColor = lipgloss.Color("#06B6D4") // cyan
+
+	healthTitleStyle = lipgloss.NewStyle().
+				Bold(true).
+				Foreground(healthColor).
+				PaddingLeft(1)
+
+	healthPanelStyle = lipgloss.NewStyle().
+				Border(lipgloss.RoundedBorder()).
+				BorderForeground(lipgloss.Color("#44403C")).
+				Padding(0, 1)
+
+	healthLabelStyle = lipgloss.NewStyle().
+				Foreground(healthColor).
+				Bold(true).
+				PaddingLeft(1)
+
+	healthDetailLabel = lipgloss.NewStyle().
+				Foreground(primaryColor).
+				Bold(true)
+
+	healthDetailVal = lipgloss.NewStyle().
+			Foreground(textColor)
 )

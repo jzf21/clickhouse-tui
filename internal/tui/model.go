@@ -24,6 +24,7 @@ const (
 	viewCloudDetail
 	viewCloudFilter
 	viewCloudScaling
+	viewHealth
 )
 
 type tab int
@@ -31,6 +32,7 @@ type tab int
 const (
 	tabLocal tab = iota
 	tabCloud
+	tabHealth
 )
 
 type statusMsg struct {
@@ -100,6 +102,9 @@ type Model struct {
 	scalingFocus   int
 	scalingCurrent *cloud.ScalingConfig
 	scalingLoading bool
+
+	// Health dashboard
+	health healthState
 }
 
 var addFormLabels = []string{"Name", "Host", "Port", "User", "Password", "Database"}
@@ -236,6 +241,24 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case healthConnectedMsg:
+		if m.tab == tabHealth {
+			return m.handleHealthConnected(msg)
+		}
+		return m, nil
+
+	case healthMetricsMsg:
+		if m.tab == tabHealth {
+			return m.handleHealthMetrics(msg)
+		}
+		return m, nil
+
+	case healthTickMsg:
+		if m.tab == tabHealth && m.health.connected && m.health.client != nil {
+			return m, m.fetchHealthMetrics()
+		}
+		return m, nil
+
 	case tea.KeyMsg:
 		if msg.String() == "ctrl+c" {
 			return m, tea.Quit
@@ -258,6 +281,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateCloudFilter(msg)
 		case viewCloudScaling:
 			return m.updateCloudScaling(msg)
+		case viewHealth:
+			return m.updateHealth(msg)
 		}
 	}
 
@@ -332,6 +357,10 @@ func (m Model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, m.loadCloudOrgsAndServices()
 		}
 		return m, nil
+	case "shift+tab":
+		m.tab = tabHealth
+		m.view = viewHealth
+		return m, nil
 	}
 	return m, nil
 }
@@ -349,6 +378,10 @@ func (m Model) updateCloudServices(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.cloudCursor++
 		}
 	case "tab":
+		m.tab = tabHealth
+		m.view = viewHealth
+		return m, nil
+	case "shift+tab":
 		m.tab = tabLocal
 		m.view = viewList
 		return m, nil
@@ -799,6 +832,8 @@ func (m Model) View() string {
 		b.WriteString(m.renderCloudFilter())
 	case viewCloudScaling:
 		b.WriteString(m.renderCloudScaling())
+	case viewHealth:
+		b.WriteString(m.renderHealth())
 	}
 
 	// Status bar
@@ -821,14 +856,18 @@ func (m Model) View() string {
 func (m Model) renderTabs() string {
 	localTab := tabInactiveStyle.Render("Local")
 	cloudTab := tabInactiveStyle.Render("Cloud")
+	healthTab := tabInactiveStyle.Render("Health")
 
-	if m.tab == tabLocal {
+	switch m.tab {
+	case tabLocal:
 		localTab = tabActiveStyle.Render("Local")
-	} else {
+	case tabCloud:
 		cloudTab = tabActiveStyle.Render("Cloud")
+	case tabHealth:
+		healthTab = tabActiveStyle.Render("Health")
 	}
 
-	return lipgloss.JoinHorizontal(lipgloss.Top, "  ", localTab, "  ", cloudTab)
+	return lipgloss.JoinHorizontal(lipgloss.Top, "  ", localTab, "  ", cloudTab, "  ", healthTab)
 }
 
 func (m Model) renderList() string {
@@ -1113,11 +1152,11 @@ func renderCloudState(state string) string {
 func (m Model) renderHelp() string {
 	switch m.view {
 	case viewList:
-		return helpStyle.Render("  j/k: navigate  |  a: add  |  d: delete  |  s: start/stop  |  tab: cloud  |  q: quit")
+		return helpStyle.Render("  j/k: navigate  |  a: add  |  d: delete  |  s: start/stop  |  tab/shift+tab: switch tabs  |  q: quit")
 	case viewAdd:
 		return helpStyle.Render("  tab: next field  |  enter: submit  |  esc: cancel")
 	case viewCloudServices:
-		return helpStyle.Render("  j/k: navigate  |  enter: details  |  s: start/stop  |  m: scaling  |  r: refresh  |  f: filter  |  c: config  |  tab: local  |  q: quit")
+		return helpStyle.Render("  j/k: navigate  |  enter: details  |  s: start/stop  |  m: scaling  |  r: refresh  |  f: filter  |  c: config  |  tab/shift+tab: switch tabs  |  q: quit")
 	case viewCloudFilter:
 		return helpStyle.Render("  j/k: navigate  |  space/enter: toggle  |  x: clear filter  |  esc: apply & back")
 	case viewCloudScaling:
@@ -1126,6 +1165,11 @@ func (m Model) renderHelp() string {
 		return helpStyle.Render("  tab: next field  |  enter: submit  |  esc: cancel")
 	case viewCloudDetail:
 		return helpStyle.Render("  m: edit scaling  |  esc: back  |  q: quit")
+	case viewHealth:
+		if m.health.connected {
+			return helpStyle.Render("  r: refresh  |  esc: disconnect  |  tab/shift+tab: switch tabs  |  q: quit")
+		}
+		return helpStyle.Render("  j/k: navigate  |  enter: connect  |  tab/shift+tab: switch tabs  |  q: quit")
 	default:
 		return helpStyle.Render("  y: confirm  |  n: cancel")
 	}
